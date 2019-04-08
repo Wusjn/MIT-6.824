@@ -22,6 +22,7 @@ import "labrpc"
 import "time"
 import "math/rand"
 import "fmt"
+import "sort"
 
 // import "bytes"
 // import "labgob"
@@ -71,6 +72,7 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	leaderID 		int
 	doneCh			chan interface{}
 	applyCh			chan ApplyMsg
 	state 			string
@@ -194,21 +196,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		may_grant_vote := true
-		if len(rf.log) > 0 {
-			term := rf.log[len(rf.log)-1].Term
-			if args.LastLogTerm < term {
-				may_grant_vote = false
-			}
-			if(args.LastLogTerm == term && args.LastLogIndex + 1 < len(rf.log)){
-				may_grant_vote = false
-			}
+		term := rf.log[len(rf.log)-1].Term
+		if args.LastLogTerm < term {
+			may_grant_vote = false
+		}
+		if(args.LastLogTerm == term && args.LastLogIndex + 1 < len(rf.log)){
+			may_grant_vote = false
 		}
 
-		rf.votedFor = args.CandidateId
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = may_grant_vote
 		if(may_grant_vote){
 			DPrintf("server %d send ticket\n", rf.me)
+			rf.votedFor = args.CandidateId
 			rf.resetTimer(TIMEOUT)
 		}
 		return
@@ -226,6 +226,7 @@ type AppendEntriesArgs struct{
 
 type AppendEntriesReply struct{
 	Term 			int
+	NextIndex		int
 	Success 		bool
 }
 
@@ -241,14 +242,67 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
+	rf.resetTimer(TIMEOUT)
+	rf.setState(FOLLOWER)
+	rf.leaderID = args.LeaderId
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.setState(FOLLOWER)
 		rf.votedFor = -1
 	}
+
+	valid_entry := false
+	if len(rf.log) > args.PrevLogIndex {
+		if rf.log[args.PrevLogIndex].Term == args.PrevLogTerm {
+			valid_entry = true
+		}
+		reply.NextIndex = rf.findFirst(rf.log[args.PrevLogIndex].Term,args.PrevLogIndex)
+	}else{
+		reply.NextIndex = len(rf.log)
+	}
+	if !valid_entry {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
+	rf.Append(args.Entries, args.PrevLogIndex + 1)
+
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = args.LeaderCommit
+		if rf.commitIndex > len(rf.log)-1 {
+			rf.commitIndex = len(rf.log)-1
+		}
+		DPrintf("server %d commited to index %d\n",rf.me,rf.commitIndex)
+	}
+	reply.NextIndex = args.PrevLogIndex + 1 + len(args.Entries)
 	reply.Term = rf.currentTerm
 	reply.Success = true
-	rf.resetTimer(TIMEOUT)
+	return
+}
+func (rf *Raft) findFirst(term int, begin int) int{
+	for i := begin; i > 0; i-- {
+		if rf.log[i].Term != term {
+			return i
+		}
+	}
+	return 1
+}
+
+func (rf *Raft) Append(entries []LogEntry, begin int) {
+	//DPrintf("server %d get %d request\n",rf.me,len(entries))
+	for i := 0; i < len(entries); i++ {
+		index := i + begin
+		switch{
+		case index > len(rf.log):
+			DPrintf("????????????\n")
+		case index == len(rf.log):
+			rf.log = append(rf.log,entries[i])
+		default:
+			if rf.log[index].Term != entries[i].Term  {
+				rf.log = append(rf.log[:index],entries[i])
+			}
+		}
+	}
 }
 
 //
@@ -311,7 +365,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
+	rf.mu.Lock()
+	if rf.state != LEADER {
+		isLeader = false
+	}else{
+		rf.log = append(rf.log,LogEntry{Term:rf.currentTerm,Command:command,})
+		index = len(rf.log)-1
+		term = rf.currentTerm
+		DPrintf("leader %d get a request\n",rf.me)
+		isLeader = true
+	}
+	rf.mu.Unlock()
 
 	return index, term, isLeader
 }
@@ -348,6 +412,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rand.Seed(int64(me))
 
+	rf.leaderID = 0
 	rf.doneCh = make(chan interface{})
 	rf.applyCh = applyCh
 	rf.setState(FOLLOWER)
@@ -355,10 +420,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.currentTerm = 0
 	rf.votedFor = -1
-	rf.log = make([]LogEntry,0)
+	rf.log = make([]LogEntry,1)
 
-	rf.commitIndex = -1
-	rf.lastApplied = -1
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 
 	rf.nextIndex = make([]int,len(peers))
 	rf.matchIndex = make([]int,len(peers))
@@ -369,6 +434,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.resetTimer(TIMEOUT)
 	go rf.waitForElection()
+	go rf.applyChannel()
 
 	return rf
 }
@@ -405,27 +471,74 @@ func (rf *Raft) sendRequestVotes(args RequestVoteArgs) {
 	}
 }
 
-func (rf *Raft) sendAppendEntries2All(args AppendEntriesArgs) {
+func (rf *Raft) sendAppendEntries2All(empty bool) {
 	for i := 0; i < len(rf.peers); i++ {
 		if i==rf.me {
 			continue
 		}
-		go func(server int){
+		args := AppendEntriesArgs{
+			Term 	:	rf.currentTerm,
+			LeaderCommit :	rf.commitIndex,
+			LeaderId	:	rf.me,
+		}
+		if empty {
+			args.PrevLogIndex = len(rf.log) - 1
+			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+		}else{
+			args.PrevLogIndex = rf.nextIndex[i]-1
+			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+			args.Entries = rf.log[rf.nextIndex[i]:]
+		}
+		go func(server int, args AppendEntriesArgs){
 			reply := AppendEntriesReply{};
 			ok := rf.sendAppendEntries(server,&args,&reply)
 			if(ok){
-				rf.handleAppendReply(reply)
+				rf.handleAppendReply(reply,server)
 			}
-		}(i)
+		}(i,args)
 	}
 }
 
-func (rf *Raft) handleAppendReply(reply AppendEntriesReply) {
+func (rf *Raft) updateCommitIndex() {
+	committed := make([]int,len(rf.matchIndex))
+	for i := 0; i < len(rf.matchIndex); i++ {
+		committed[i] = rf.matchIndex[i]
+	}
+	committed[rf.me] = len(rf.log)-1
+	sort.Ints(committed)
+	nth := (len(rf.matchIndex)+1)/2 - 1 
+	nth = len(committed) - nth - 1
+	if rf.commitIndex < committed[nth] {
+		rf.commitIndex = committed[nth]
+		DPrintf("leader %d commited to index %d\n",rf.me,rf.commitIndex)
+	}
+}
+
+func (rf *Raft) handleAppendReply(reply AppendEntriesReply,server int) {
+	rf.mu.Lock()
+    defer rf.mu.Unlock()
+
+    if reply.Term < rf.currentTerm {
+    	return
+    }
+
 	if reply.Term > rf.currentTerm {
 		rf.setState(FOLLOWER)
 		rf.votedFor = -1
 		rf.currentTerm = reply.Term
 		rf.resetTimer(TIMEOUT)
+		return
+	}
+
+	if rf.state == LEADER {
+		if !reply.Success {
+			rf.nextIndex[server] = reply.NextIndex
+		}else{
+			rf.nextIndex[server] = reply.NextIndex
+			rf.matchIndex[server] = reply.NextIndex - 1
+	    	//DPrintf("%d\n",rf.nextIndex)
+			rf.updateCommitIndex()
+		}
 	}
 }
 
@@ -451,20 +564,47 @@ func (rf *Raft) handleVoteReply(reply RequestVoteReply) {
 		DPrintf("server %d get ticket\n", rf.me)
     	if rf.ticketsReceived > len(rf.peers)/2 {
 			rf.setState(LEADER)
+			rf.leaderID = rf.me
     		for i := 0; i < len(rf.peers); i++ {
     			if i==rf.me {
     				continue
     			}
     			rf.nextIndex[i] = len(rf.log)
-    			rf.matchIndex[i] = -1
+    			rf.matchIndex[i] = 0
     		}
-			rf.sendAppendEntries2All(AppendEntriesArgs{
-				Term 	:	rf.currentTerm,
-				})
+    		//DPrintf("%d\n",rf.nextIndex)
+			rf.sendAppendEntries2All(true)
     		rf.resetTimer(HEARTBEAT)
     	}
     }
 }
+
+func (rf *Raft) applyChannel() {
+	for{
+		rf.mu.Lock()
+		select{
+		case <- rf.doneCh:
+			return
+		default:
+			if rf.lastApplied < rf.commitIndex {
+				entry := rf.log[rf.lastApplied + 1]
+				msg := ApplyMsg{
+					CommandValid:	true,
+					CommandIndex:	rf.lastApplied+1,
+					Command:		entry.Command,
+				}
+				select{
+				case rf.applyCh <- msg:
+					rf.lastApplied += 1
+				default:
+				}
+			}
+		}
+		rf.mu.Unlock()
+		time.Sleep(10*time.Millisecond)
+	}
+}
+
 
 
 func (rf *Raft) waitForElection() {
@@ -484,22 +624,19 @@ func (rf *Raft) waitForElection() {
 					Term:         rf.currentTerm,
 	            	CandidateId:  rf.me,
 	            	LastLogIndex: len(rf.log) - 1,
+	            	LastLogTerm:	rf.log[len(rf.log)-1].Term,
 				};
-				if len(rf.log) > 0 {
-		            args.LastLogTerm = rf.log[args.LastLogIndex].Term
-		        }
 				rf.sendRequestVotes(args)
 				rf.resetTimer(TIMEOUT)
 			}else{
-				rf.sendAppendEntries2All(AppendEntriesArgs{
-					Term 	:	rf.currentTerm,
-					})
+				rf.sendAppendEntries2All(false)
 				rf.resetTimer(HEARTBEAT)
 			}
 		default:
 		}
 		fmt.Printf("")
 		rf.mu.Unlock()
+		time.Sleep(10*time.Millisecond)
 	}
 }
 
