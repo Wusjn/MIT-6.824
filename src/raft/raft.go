@@ -23,9 +23,8 @@ import "time"
 import "math/rand"
 import "fmt"
 import "sort"
-
-// import "bytes"
-// import "labgob"
+import "bytes"
+import "labgob"
 
 
 
@@ -58,6 +57,8 @@ const(
 
 	TIMEOUT 	= 	500
 	HEARTBEAT	=	200
+
+	NOOP 		=	"no op"
 )
 
 //
@@ -123,6 +124,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	for i := 0; i < len(rf.log); i++ {
+		e.Encode(rf.log[i])
+	}
+	rf.persister.SaveRaftState(w.Bytes())
 }
 
 
@@ -146,6 +155,25 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor	int
+	var logEntry 	LogEntry
+	if d.Decode(&currentTerm)!=nil || d.Decode(&votedFor)!=nil {
+		DPrintf("server %d has no previous state\n",rf.me)
+		return
+	}else{
+		rf.currentTerm = currentTerm
+		rf.votedFor	= votedFor
+	}
+	rf.log = make([]LogEntry,0)
+	for d.Decode(&logEntry)==nil {
+		rf.log = append(rf.log, logEntry)
+	}
+	DPrintf("server %d comes back to live, with log %d\n",rf.me,len(rf.log))
+	return
 }
 
 
@@ -211,8 +239,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.votedFor = args.CandidateId
 			rf.resetTimer(TIMEOUT)
 		}
-		return
 	}
+	rf.persist()
 }
 
 type AppendEntriesArgs struct{
@@ -277,7 +305,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.NextIndex = args.PrevLogIndex + 1 + len(args.Entries)
 	reply.Term = rf.currentTerm
 	reply.Success = true
-	return
+	rf.persist()
 }
 func (rf *Raft) findFirst(term int, begin int) int{
 	for i := begin; i > 0; i-- {
@@ -421,6 +449,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.log = make([]LogEntry,1)
+	rf.log[0] = LogEntry{
+		Term : 0,
+		Command : NOOP,
+	}
 
 	rf.commitIndex = 0
 	rf.lastApplied = 0
@@ -430,7 +462,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	rf.persist()
 
 	rf.resetTimer(TIMEOUT)
 	go rf.waitForElection()
@@ -509,6 +540,7 @@ func (rf *Raft) updateCommitIndex() {
 	nth := (len(rf.matchIndex)+1)/2 - 1 
 	nth = len(committed) - nth - 1
 	if rf.commitIndex < committed[nth] {
+		rf.persist()
 		rf.commitIndex = committed[nth]
 		DPrintf("leader %d commited to index %d\n",rf.me,rf.commitIndex)
 	}
@@ -581,26 +613,22 @@ func (rf *Raft) handleVoteReply(reply RequestVoteReply) {
 
 func (rf *Raft) applyChannel() {
 	for{
-		rf.mu.Lock()
 		select{
 		case <- rf.doneCh:
 			return
 		default:
-			if rf.lastApplied < rf.commitIndex {
+			for rf.lastApplied < rf.commitIndex {
 				entry := rf.log[rf.lastApplied + 1]
 				msg := ApplyMsg{
 					CommandValid:	true,
 					CommandIndex:	rf.lastApplied+1,
 					Command:		entry.Command,
 				}
-				select{
-				case rf.applyCh <- msg:
-					rf.lastApplied += 1
-				default:
-				}
+				rf.applyCh <- msg
+				DPrintf("server %d index %d : %s\n",rf.me,msg.CommandIndex, msg.Command)
+				rf.lastApplied += 1
 			}
 		}
-		rf.mu.Unlock()
 		time.Sleep(10*time.Millisecond)
 	}
 }
@@ -612,6 +640,7 @@ func (rf *Raft) waitForElection() {
 		rf.mu.Lock()
 		select{
 		case <- rf.doneCh:
+			rf.mu.Unlock()
 			return
 		case <- rf.timer.C :
 			if rf.state != LEADER {
