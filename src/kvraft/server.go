@@ -70,7 +70,6 @@ type KVServer struct {
 	result map[string]string
 	maxSeqNum map[int]int
 	doneCh chan int
-	recoverLogNum int
 }
 
 func rpcRequestId(client int, seqNum int) string {
@@ -243,7 +242,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.result = make(map[string]string)
 	kv.maxSeqNum = make(map[int]int)
 	kv.doneCh = make(chan int)
-	kv.recoverLogNum = 0
 	go kv.applyOps()
 	//go kv.aliveCheck()
 
