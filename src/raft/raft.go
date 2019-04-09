@@ -95,6 +95,7 @@ type Raft struct {
 
 }
 
+
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -466,9 +467,25 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.resetTimer(TIMEOUT)
 	go rf.waitForElection()
 	go rf.applyChannel()
+	//go rf.aliveCheck()
 
 	return rf
 }
+
+func (rf *Raft) aliveCheck() {
+	for{
+		rf.mu.Lock()
+		select{
+		case <- rf.doneCh:
+			return
+		default:
+		}
+		fmt.Printf("server %d alive\n",rf.me)
+		rf.mu.Unlock()
+		time.Sleep(time.Second)
+	}
+}
+
 
 func (rf *Raft) resetTimer(basicTime int) {
 	waitTime := rand.Int()%100
@@ -613,8 +630,10 @@ func (rf *Raft) handleVoteReply(reply RequestVoteReply) {
 
 func (rf *Raft) applyChannel() {
 	for{
+		rf.mu.Lock()
 		select{
 		case <- rf.doneCh:
+			close(rf.applyCh)
 			return
 		default:
 			for rf.lastApplied < rf.commitIndex {
@@ -624,11 +643,22 @@ func (rf *Raft) applyChannel() {
 					CommandIndex:	rf.lastApplied+1,
 					Command:		entry.Command,
 				}
-				rf.applyCh <- msg
+				SendOver:
+				for{
+					select{
+						case rf.applyCh <- msg:
+							break SendOver
+						default:
+							rf.mu.Unlock()
+							time.Sleep(10*time.Millisecond)
+							rf.mu.Lock()
+					}
+				}
 				DPrintf("server %d index %d : %s\n",rf.me,msg.CommandIndex, msg.Command)
 				rf.lastApplied += 1
 			}
 		}
+		rf.mu.Unlock()
 		time.Sleep(10*time.Millisecond)
 	}
 }
