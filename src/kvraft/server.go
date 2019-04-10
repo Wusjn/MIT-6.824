@@ -105,9 +105,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		kv.maxSeqNum[op.ClientId] = 0
 		maxSeqNum = 0
 	}
-	switch {
-	case maxSeqNum == op.SeqNum - 1:
-	case maxSeqNum >= op.SeqNum:
+	if maxSeqNum >= op.SeqNum {
 		value, ok := kv.data[op.Key]
 		if ok {
 			reply.Err = OK
@@ -118,9 +116,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		}
 		kv.mu.Unlock()
 		return
-	default:
-		log.Printf("client %d has applied %d but get %d afterwards\n",op.ClientId,maxSeqNum,op.SeqNum)
-		//log.Fatal("program exist\n")
 	}
 
 	doneCh := make(chan int)
@@ -185,16 +180,12 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		kv.maxSeqNum[op.ClientId] = 0
 		maxSeqNum = 0
 	}
-	switch {
-	case maxSeqNum == op.SeqNum - 1:
-	case maxSeqNum >= op.SeqNum:
+	if maxSeqNum >= op.SeqNum {
 		reply.Err = OK
 		kv.mu.Unlock()
 		return
-	default:
-		log.Printf("client %d has applied %d but get %d afterwards\n",op.ClientId,maxSeqNum,op.SeqNum)
-		//log.Fatal("program exist\n")
 	}
+
 
 	doneCh := make(chan int)
 	kv.done[opId] = doneCh
