@@ -5,7 +5,7 @@ import "crypto/rand"
 import "math/big"
 import "sync"
 import "fmt"
-//import "time"
+import "time"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
@@ -80,7 +80,8 @@ func (ck *Clerk) Get(key string) string {
 					break FindLeader
 				}
 			}
-			//DPrintf("client %d retry op %d\n",ck.clientId,ck.seqNum)
+			time.Sleep(time.Millisecond * 1000)
+			DPrintf("client %d retry op %d\n",ck.clientId,ck.seqNum)
 		}
 	}
 
@@ -129,7 +130,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					break FindLeader
 				}
 			}
-			//DPrintf("client %d retry op %d\n",ck.clientId,ck.seqNum)
+			time.Sleep(time.Millisecond * 1000)
+			DPrintf("client %d retry op %d\n",ck.clientId,ck.seqNum)
 		}
 	}
 	DPrintf("clerk %d end putAppend %d\n",ck.clientId,ck.seqNum)

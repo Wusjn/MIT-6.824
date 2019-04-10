@@ -9,16 +9,17 @@ import (
 	"fmt"
 	"time"
 	"strconv"
+	"bytes"
 )
 
 const (
-	Debug 	= 0
+	Debug 	= 1
 
 	GET		= 0
 	PUT 	= 1
 	APPEND 	= 2
 
-	TIMEOUT = 100
+	TIMEOUT = 500
 )
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
@@ -63,6 +64,7 @@ type KVServer struct {
 	applyCh chan raft.ApplyMsg
 
 	maxraftstate int // snapshot if log grows this big
+	persister *raft.Persister
 
 	// Your definitions here.
 	data map[string]string
@@ -98,25 +100,38 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 	reply.WrongLeader = false
 
-	doneCh := make(chan int)
-	_,ok := kv.done[opId]
-	if ok {
-		DPrintf("-----------------------------------------\n")
-		DPrintf("kvserver %d: channel for op %d exist\n",kv.me,opId)
+	maxSeqNum , ok := kv.maxSeqNum[op.ClientId]
+	if !ok {
+		kv.maxSeqNum[op.ClientId] = 0
+		maxSeqNum = 0
 	}
+	switch {
+	case maxSeqNum == op.SeqNum - 1:
+	case maxSeqNum >= op.SeqNum:
+		value, ok := kv.data[op.Key]
+		if ok {
+			reply.Err = OK
+			reply.Value = value
+		}else{
+			reply.Err = ErrNoKey
+			reply.Value = ""
+		}
+		kv.mu.Unlock()
+		return
+	default:
+		log.Printf("client %d has applied %d but get %d afterwards\n",op.ClientId,maxSeqNum,op.SeqNum)
+		//log.Fatal("program exist\n")
+	}
+
+	doneCh := make(chan int)
 	kv.done[opId] = doneCh
 
 	kv.mu.Unlock()
 	done := false
-	Done:
-	for i := 0; i < 5; i++ {
-		select{
-		case <- doneCh:
-			done = true
-			break Done
-		default:
-		}
-		time.Sleep(time.Millisecond * TIMEOUT)
+	select{
+	case <- doneCh:
+		done = true
+	case <-time.After(time.Millisecond * TIMEOUT):
 	}
 	kv.mu.Lock()
 
@@ -153,8 +168,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	case "Append":
 		op.OpType = APPEND
 	default:
-		DPrintf("-----------------------------------------\n")
-		DPrintf("kv server %d get wrong op type %s\n",kv.me,args.Op)
+		log.Printf("kv server %d get wrong op type %s\n",kv.me,args.Op)
+		//log.Fatal("program exist\n")
 	}
 
 	_, _, isLeader := kv.rf.Start(op)
@@ -165,25 +180,31 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 	reply.WrongLeader = false
 
-	doneCh := make(chan int)
-	_,ok := kv.done[opId]
-	if ok {
-		DPrintf("-----------------------------------------\n")
-		DPrintf("kvserver %d: channel for op %d exist\n",kv.me,opId)
+	maxSeqNum , ok := kv.maxSeqNum[op.ClientId]
+	if !ok {
+		kv.maxSeqNum[op.ClientId] = 0
+		maxSeqNum = 0
 	}
+	switch {
+	case maxSeqNum == op.SeqNum - 1:
+	case maxSeqNum >= op.SeqNum:
+		reply.Err = OK
+		kv.mu.Unlock()
+		return
+	default:
+		log.Printf("client %d has applied %d but get %d afterwards\n",op.ClientId,maxSeqNum,op.SeqNum)
+		//log.Fatal("program exist\n")
+	}
+
+	doneCh := make(chan int)
 	kv.done[opId] = doneCh
 
 	kv.mu.Unlock()
 	done := false
-	Done:
-	for i := 0; i < 5; i++ {
-		select{
-		case <- doneCh:
-			done = true
-			break Done
-		default:
-		}
-		time.Sleep(time.Millisecond * TIMEOUT)
+	select{
+	case <- doneCh:
+		done = true
+	case <-time.After(time.Millisecond * TIMEOUT):
 	}
 	kv.mu.Lock()
 
@@ -191,7 +212,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if !done {
 		reply.Err = ErrTimeOut
 	}
-	kv.mu.Unlock()
+	kv.mu.Unlock()	
 }
 
 //
@@ -233,15 +254,18 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
-	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.applyCh = make(chan raft.ApplyMsg,10)
 
 	// You may need initialization code here.
+	kv.persister = persister
 	kv.data = make(map[string]string)
 	kv.done = make(map[string]chan int)
 	kv.result = make(map[string]string)
 	kv.maxSeqNum = make(map[int]int)
 	kv.doneCh = make(chan int)
+	kv.readSnapshot(persister.ReadSnapshot())
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+
 	go kv.applyOps()
 	//go kv.aliveCheck()
 
@@ -273,10 +297,22 @@ func (kv *KVServer) applyOp(msg raft.ApplyMsg){
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	if !msg.CommandValid {
+		//snapshot
+		cmd,ok := msg.Command.([]byte)
+		if !ok {
+			log.Printf("kv server %d get wrong msg command type %T\n",kv.me,msg.Command)
+			//log.Fatal("program exist\n")
+		}else{
+			kv.readSnapshot(cmd)
+		}
+		return
+	}
+
 	op,ok := msg.Command.(Op)
 	if !ok {
-		DPrintf("-----------------------------------------\n")
-		DPrintf("kv server %d get wrong msg command type %T\n",kv.me,msg.Command)
+		log.Printf("kv server %d get wrong msg command type %T\n",kv.me,msg.Command)
+		//log.Fatal("program exist\n")
 		return
 	}
 
@@ -293,9 +329,11 @@ func (kv *KVServer) applyOp(msg raft.ApplyMsg){
 	case maxSeqNum == op.SeqNum - 1:
 		duplicated = false
 		kv.maxSeqNum[op.ClientId] = op.SeqNum
+	case maxSeqNum > op.SeqNum:
+		return
 	default:
-		DPrintf("-----------------------------------------\n")
-		DPrintf("client %d has applied %d but get %d afterwards\n",op.ClientId,op.SeqNum,maxSeqNum)
+		log.Printf("client %d has applied %d but get %d afterwards\n",op.ClientId,maxSeqNum,op.SeqNum)
+		//log.Fatal("program exist\n")
 	}
 
 	_, hasChannel := kv.done[op.Id]
@@ -309,14 +347,14 @@ func (kv *KVServer) applyOp(msg raft.ApplyMsg){
 			}else{
 				kv.result[op.Id] = ""
 			}
-			DPrintf("client %d opSeq %d get : key=%s result=%s\n",op.ClientId,op.SeqNum,op.Key,value)
+			//DPrintf("server %d: client %d opSeq %d get : key=%s result=%s\n",kv.me,op.ClientId,op.SeqNum,op.Key,value)
 		}
 	case PUT:
 		if !duplicated {
 			kv.data[op.Key] = op.Value
 		}
 		if hasChannel {
-			DPrintf("client %d opSeq %d put : key=%s value=%s\n",op.ClientId,op.SeqNum,op.Key,op.Value)
+			//DPrintf("server %d: client %d opSeq %d put : key=%s value=%s\n",kv.me,op.ClientId,op.SeqNum,op.Key,op.Value)
 		}
 	case APPEND:
 		if !duplicated {
@@ -328,14 +366,44 @@ func (kv *KVServer) applyOp(msg raft.ApplyMsg){
 			}
 		}
 		if hasChannel {
-			DPrintf("client %d opSeq %d append : key=%s value=%s result=%s\n",op.ClientId,op.SeqNum,op.Key,op.Value,kv.data[op.Key])
+			//DPrintf("server %d: client %d opSeq %d append : key=%s value=%s result=%s\n",kv.me,op.ClientId,op.SeqNum,op.Key,op.Value,kv.data[op.Key])
 		}
 	default:
-		DPrintf("-----------------------------------------\n")
-		DPrintf("kv server %d get wrong op type %d\n",kv.me,op.OpType)
+		log.Printf("kv server %d get wrong op type %d\n",kv.me,op.OpType)
+		//log.Fatal("program exist\n")
 	}
 	if hasChannel {
 		close(kv.done[op.Id])
 		delete(kv.done, op.Id)
+	}
+	kv.snapshotIfNeeded(msg.CommandIndex)
+}
+
+func (kv *KVServer) snapshotIfNeeded(lastCommandIdx int){
+	if kv.maxraftstate!=-1 &&
+		float64(kv.persister.RaftStateSize()) > float64(kv.maxraftstate) &&
+		lastCommandIdx - kv.rf.GetBasicIdx() > 10 {
+		kv.snapshot(lastCommandIdx)
+	}
+}
+
+func (kv *KVServer) snapshot(lastCommandIdx int){
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.data)
+	e.Encode(kv.maxSeqNum)
+	snapshot := w.Bytes()
+	kv.rf.PersistAndSaveSnapshot(lastCommandIdx,snapshot)
+}
+
+func (kv *KVServer) readSnapshot(snapshot []byte){
+	if snapshot == nil || len(snapshot) < 1 {
+		return
+	}
+
+	d := labgob.NewDecoder(bytes.NewBuffer(snapshot))
+	if d.Decode(&kv.data) != nil ||
+		d.Decode(&kv.maxSeqNum) != nil {
+		log.Fatal("Error in reading snapshot")
 	}
 }

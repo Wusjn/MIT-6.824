@@ -10,6 +10,7 @@ import "log"
 import "strings"
 import "sync"
 import "sync/atomic"
+import "fmt"
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -515,7 +516,7 @@ func TestOnePartition3A(t *testing.T) {
 		t.Fatalf("Get in minority completed")
 	case <-time.After(time.Second):
 	}
-
+	fmt.Printf("------------------\n")
 	check(cfg, t, ckp1, "1", "14")
 	Put(cfg, ckp1, "1", "16")
 	check(cfg, t, ckp1, "1", "16")
