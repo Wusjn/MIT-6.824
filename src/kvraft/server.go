@@ -370,7 +370,7 @@ func (kv *KVServer) applyOp(msg raft.ApplyMsg){
 
 func (kv *KVServer) snapshotIfNeeded(lastCommandIdx int){
 	if kv.maxraftstate!=-1 &&
-		float64(kv.persister.RaftStateSize()) > float64(kv.maxraftstate) &&
+		kv.persister.RaftStateSize() > kv.maxraftstate &&
 		lastCommandIdx - kv.rf.GetBasicIdx() > 10 {
 		kv.snapshot(lastCommandIdx)
 	}
