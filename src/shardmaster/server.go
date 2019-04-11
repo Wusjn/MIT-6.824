@@ -317,12 +317,16 @@ func redistribute(config *Config){
 	upper := (NShards + len(config.Groups) - 1) / len(config.Groups)
 	lower := NShards/len(config.Groups)
 	ownerMap := make(map[int][]int)
+	for k,_ := range config.Groups{
+		ownerMap[k] = make([]int,0)
+	}
 	for i := 0; i < len(config.Shards); i++ {
 		_,ok := ownerMap[config.Shards[i]]
-		if !ok {
-			ownerMap[config.Shards[i]] = make([]int,0)
+		if ok {
+			ownerMap[config.Shards[i]] = append(ownerMap[config.Shards[i]],i)
+		}else{
+			aboveUpper = append(aboveUpper,i)
 		}
-		ownerMap[config.Shards[i]] = append(ownerMap[config.Shards[i]],i)
 	}
 
 	for k,v := range ownerMap{
@@ -347,14 +351,14 @@ func redistribute(config *Config){
 			config.Shards[aboveUpper[i]] = belowLower[i]
 		}
 		for i := len(belowLower); i < len(aboveUpper); i++ {
-			config.Shards[aboveUpper[i]] = reachLower[i]
+			config.Shards[aboveUpper[i]] = reachLower[i - len(belowLower)]
 		}
 	default:
 		for i := 0; i < len(aboveUpper); i++ {
 			config.Shards[aboveUpper[i]] = belowLower[i]
 		}
 		for i := len(aboveUpper); i < len(belowLower); i++ {
-			config.Shards[reachUpper[i]] = belowLower[i]
+			config.Shards[reachUpper[i - len(aboveUpper)]] = belowLower[i]
 		}
 	}
 }
