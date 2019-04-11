@@ -320,11 +320,9 @@ func (kv *KVServer) applyOp(msg raft.ApplyMsg){
 	case maxSeqNum == op.SeqNum - 1:
 		duplicated = false
 		kv.maxSeqNum[op.ClientId] = op.SeqNum
-	case maxSeqNum > op.SeqNum:
-		return
 	default:
 		log.Printf("client %d has applied %d but get %d afterwards\n",op.ClientId,maxSeqNum,op.SeqNum)
-		//log.Fatal("program exist\n")
+		log.Fatal("program exist\n")
 	}
 
 	_, hasChannel := kv.done[op.Id]
