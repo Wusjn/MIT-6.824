@@ -310,11 +310,53 @@ func copyConfig(origin Config) Config{
 }
 
 func redistribute(config *Config){
-	GIDs := make([]int,0)
-	for k,_ := range config.Groups{
-		GIDs = append(GIDs,k)
+	aboveUpper :=make([]int,0)
+	belowLower :=make([]int,0)
+	reachUpper :=make([]int,0)
+	reachLower :=make([]int,0)
+	upper := (NShards + len(config.Groups) - 1) / len(config.Groups)
+	lower := NShards/len(config.Groups)
+	ownerMap := make(map[int][]int)
+	for i := 0; i < len(config.Shards); i++ {
+		_,ok := ownerMap[config.Shards[i]]
+		if !ok {
+			ownerMap[config.Shards[i]] = make([]int,0)
+		}
+		ownerMap[config.Shards[i]] = append(ownerMap[config.Shards[i]],i)
 	}
-	//TODO
+
+	for k,v := range ownerMap{
+		switch{
+		case len(v) == upper:
+			reachUpper = append(reachUpper,v[0])
+		case len(v) == lower:
+			reachLower = append(reachLower,k)
+		case len(v)>upper:
+			for i := 0; i < len(v) - upper; i++ {
+				aboveUpper = append(aboveUpper,v[i])
+			}
+		case len(v)<lower:
+			for i := 0; i < lower - len(v); i++ {
+				belowLower = append(belowLower,k)
+			}
+		}
+	}
+	switch{
+	case len(aboveUpper) >= len(belowLower):
+		for i := 0; i < len(belowLower); i++ {
+			config.Shards[aboveUpper[i]] = belowLower[i]
+		}
+		for i := len(belowLower); i < len(aboveUpper); i++ {
+			config.Shards[aboveUpper[i]] = reachLower[i]
+		}
+	default:
+		for i := 0; i < len(aboveUpper); i++ {
+			config.Shards[aboveUpper[i]] = belowLower[i]
+		}
+		for i := len(aboveUpper); i < len(belowLower); i++ {
+			config.Shards[reachUpper[i]] = belowLower[i]
+		}
+	}
 }
 
 func opJoin(config *Config, servers map[int][]string) {
