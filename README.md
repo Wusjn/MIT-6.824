@@ -8,4 +8,4 @@
 - [x] Lab 2
 - [x] Lab 3
 - [x] Lab 4A
-- [o] Lab 4B
+- [ ] Lab 4B
