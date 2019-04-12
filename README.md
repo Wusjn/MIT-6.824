@@ -1,4 +1,4 @@
-#MIT 6.824 labs
+# MIT-6.824-2018 labs
 
 ## Overview
 [Homepage](http://nil.csail.mit.edu/6.824/2018/)
