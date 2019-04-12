@@ -76,7 +76,7 @@ func (sm *ShardMaster) modify(op *Op) (reply ModifyReply) {
 
 	reply = ModifyReply{}
 
-	_, _, isLeader := sm.rf.Start(op)
+	_, _, isLeader := sm.rf.Start(*op)
 	if !isLeader {
 		reply.WrongLeader = true
 		sm.mu.Unlock()
@@ -151,7 +151,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
 	op := Op{
-		OpType 	: JOIN,
+		OpType 	: MOVE,
 		Shard : args.Shard,
 		GID : args.GID,
 		Id : rpcRequestId(args.ClientId,args.SeqNum),
@@ -310,6 +310,12 @@ func copyConfig(origin Config) Config{
 }
 
 func redistribute(config *Config){
+	if len(config.Groups) == 0 {
+		for i := 0; i < NShards; i++ {
+			config.Shards[i] = 0
+		}
+		return
+	}
 	aboveUpper :=make([]int,0)
 	belowLower :=make([]int,0)
 	reachUpper :=make([]int,0)
@@ -339,10 +345,12 @@ func redistribute(config *Config){
 			for i := 0; i < len(v) - upper; i++ {
 				aboveUpper = append(aboveUpper,v[i])
 			}
+			reachUpper = append(reachUpper,v[len(v) - upper])
 		case len(v)<lower:
 			for i := 0; i < lower - len(v); i++ {
 				belowLower = append(belowLower,k)
 			}
+			reachLower = append(reachLower,k)
 		}
 	}
 	switch{

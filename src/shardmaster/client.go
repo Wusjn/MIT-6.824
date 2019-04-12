@@ -83,7 +83,6 @@ type argWrapper struct{
 }
 
 func (ck *Clerk) modify(args argWrapper){
-	ck.seqNum += 1
 	var joinArg JoinArgs
 	var leaveArg LeaveArgs
 	var moveArg MoveArgs
@@ -91,21 +90,21 @@ func (ck *Clerk) modify(args argWrapper){
 		case "join" :
 			joinArg = args.arg.(JoinArgs)
 			reply := JoinReply{}
-			ok := ck.servers[ck.lastLeader].Call("ShardMaster.Join", &args, &reply)
+			ok := ck.servers[ck.lastLeader].Call("ShardMaster.Join", &joinArg, &reply)
 			if ok && !reply.WrongLeader && reply.Err!=ErrTimeOut {
 				return
 			}
 		case "leave" :
 			leaveArg = args.arg.(LeaveArgs)
 			reply := LeaveReply{}
-			ok := ck.servers[ck.lastLeader].Call("ShardMaster.Leave", &args, &reply)
+			ok := ck.servers[ck.lastLeader].Call("ShardMaster.Leave", &leaveArg, &reply)
 			if ok && !reply.WrongLeader && reply.Err!=ErrTimeOut {
 				return
 			}
 		case "move" :
 			moveArg = args.arg.(MoveArgs)
 			reply := MoveReply{}
-			ok := ck.servers[ck.lastLeader].Call("ShardMaster.Move", &args, &reply)
+			ok := ck.servers[ck.lastLeader].Call("ShardMaster.Move", &moveArg, &reply)
 			if ok && !reply.WrongLeader && reply.Err!=ErrTimeOut {
 				return
 			}
@@ -119,21 +118,21 @@ func (ck *Clerk) modify(args argWrapper){
 			switch args.opType{
 				case "join" :
 					reply := JoinReply{}
-					ok := ck.servers[i].Call("ShardMaster.Join", joinArg, &reply)
+					ok := ck.servers[i].Call("ShardMaster.Join", &joinArg, &reply)
 					if ok && !reply.WrongLeader && reply.Err!=ErrTimeOut {
 						ck.lastLeader = i
 						return
 					}
 				case "leave" :
 					reply := LeaveReply{}
-					ok := ck.servers[i].Call("ShardMaster.Leave", leaveArg, &reply)
+					ok := ck.servers[i].Call("ShardMaster.Leave", &leaveArg, &reply)
 					if ok && !reply.WrongLeader && reply.Err!=ErrTimeOut {
 						ck.lastLeader = i
 						return
 					}
 				case "move" :
 					reply := MoveReply{}
-					ok := ck.servers[i].Call("ShardMaster.Move", moveArg, &reply)
+					ok := ck.servers[i].Call("ShardMaster.Move", &moveArg, &reply)
 					if ok && !reply.WrongLeader && reply.Err!=ErrTimeOut {
 						ck.lastLeader = i
 						return
